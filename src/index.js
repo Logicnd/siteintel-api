@@ -2,13 +2,14 @@ import express from "express";
 import dns from "dns";
 import fetch from "node-fetch";
 import whois from "whois-json";
-import sslInfo from "ssl-info";
+import tls from "tls";
 
 import { calculateRiskScore } from "./utils/score.js";
 
 const app = express();
 app.use(express.json());
 
+// Root route
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -17,6 +18,7 @@ app.get("/", (req, res) => {
   });
 });
 
+// Main intelligence endpoint
 app.post("/v1/report", async (req, res) => {
   try {
     const target = req.body?.target;
@@ -62,8 +64,11 @@ app.post("/v1/report", async (req, res) => {
   }
 });
 
-// --- helpers ---
+// -------------------------------
+// Helper Functions
+// -------------------------------
 
+// Extract domain from URL or raw input
 function extractDomain(target) {
   try {
     if (!target.includes("://")) {
@@ -76,13 +81,17 @@ function extractDomain(target) {
   }
 }
 
+// DNS lookup (A, MX, NS)
 function resolveDNS(domain) {
   return new Promise((resolve) => {
     const result = {};
+
     dns.resolve4(domain, (err, addresses) => {
       result.a = err ? [] : addresses || [];
+
       dns.resolveMx(domain, (err2, mx) => {
         result.mx = err2 ? [] : mx || [];
+
         dns.resolveNs(domain, (err3, ns) => {
           result.ns = err3 ? [] : ns || [];
           resolve(result);
@@ -92,6 +101,7 @@ function resolveDNS(domain) {
   });
 }
 
+// WHOIS lookup (safe)
 async function safeWhois(domain) {
   try {
     const data = await whois(domain);
@@ -105,6 +115,7 @@ async function safeWhois(domain) {
   }
 }
 
+// HTTP info + security headers
 async function fetchHttpInfo(target) {
   try {
     const url = target.includes("://") ? target : `https://${target}`;
@@ -132,22 +143,50 @@ async function fetchHttpInfo(target) {
   }
 }
 
+// Native TLS SSL certificate fetcher (no dependencies)
 async function safeSSL(domain) {
-  try {
-    const info = await sslInfo(domain);
+  return new Promise((resolve) => {
+    const socket = tls.connect(
+      {
+        host: domain,
+        port: 443,
+        servername: domain,
+        rejectUnauthorized: false,
+      },
+      () => {
+        const cert = socket.getPeerCertificate();
 
-    return {
-      valid: info.valid,
-      daysRemaining: info.daysRemaining,
-      validFrom: info.validFrom,
-      validTo: info.validTo,
-      issuer: info.issuer,
-    };
-  } catch {
-    return null;
-  }
+        if (!cert || !cert.valid_to) {
+          socket.end();
+          return resolve(null);
+        }
+
+        const validTo = new Date(cert.valid_to);
+        const validFrom = new Date(cert.valid_from);
+        const now = new Date();
+        const daysRemaining = Math.round(
+          (validTo - now) / (1000 * 60 * 60 * 24),
+        );
+
+        resolve({
+          valid: now < validTo,
+          validFrom: validFrom.toISOString(),
+          validTo: validTo.toISOString(),
+          daysRemaining,
+          issuer: cert.issuer?.O || null,
+        });
+
+        socket.end();
+      },
+    );
+
+    socket.on("error", () => resolve(null));
+  });
 }
 
+// -------------------------------
+// Start server
+// -------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`SiteIntel API listening on port ${PORT}`);
