@@ -2,7 +2,7 @@ import express from "express";
 import dns from "dns";
 import fetch from "node-fetch";
 import whois from "whois-json";
-import sslChecker from "ssl-checker";
+import sslInfo from "ssl-info";
 
 import { calculateRiskScore } from "./utils/score.js";
 
@@ -134,7 +134,8 @@ async function fetchHttpInfo(target) {
 
 async function safeSSL(domain) {
   try {
-    const info = await sslChecker(domain, { method: "GET", port: 443 });
+    const info = await sslInfo(domain);
+
     return {
       valid: info.valid,
       daysRemaining: info.daysRemaining,
